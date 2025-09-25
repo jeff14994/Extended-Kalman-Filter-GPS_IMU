@@ -1,3 +1,7 @@
+# Paper
+D. Ellinoudis, L. Doitsidis and A. Amanatiadis, "Robust Multisensor Localization Using Sparse Landmarks for Autonomous Driving," 2024 32nd Mediterranean Conference on Control and Automation (MED), Chania - Crete, Greece, 2024, pp. 482-487, doi: 10.1109/MED61351.2024.10566202.
+keywords: {Location awareness;Global navigation satellite system;Laser radar;System performance;Vehicle safety;Sensor systems;Sensors}, 
+
 # Sensor Fusion of GPS and IMU with Extended Kalman Filter for Localization in Autonomous Driving
 # Algorithm
 ![alt text](https://github.com/Janudis/EKF_GPS_IMU/blob/master/Extended-Kalman-Filter-Step.png)
