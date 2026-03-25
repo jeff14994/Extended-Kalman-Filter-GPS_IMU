@@ -17,16 +17,61 @@ In our case, IMU provide data more frequently than GPS. Here is a step-by-step d
 6) Repeat steps 2-5: This process is then repeated for each time step, using the a posteriori estimates from the previous time step as the a priori estimates for the current step.  
 
 # Dependencies
-1) C++ compiler supporting C++11 or higher
-  
-2) Eigen library (for linear algebra operations)
 
-# Usage
-1) Install the required dependencies and ensure they are properly linked in your build environment.
-2) Place the input data file (localization_log2.csv) in the same directory as the code files.
-3) Compile the code using a C++ compiler.
-4) Change the CMakeLists.txt before running the compiled executable.
-5) The estimated position and orientation will be saved in the output_utm.csv file.
+**Build:**
+- C++ compiler supporting C++14 or higher (GCC, Clang, MSVC)
+- CMake 3.22+
+- Eigen library (included in `lib/` — no separate installation needed)
+
+**Visualization (optional):**
+- Python 3
+- matplotlib, numpy, pandas (`pip3 install matplotlib numpy pandas`)
+
+# Quick Start
+
+```bash
+# Clone the repo
+git clone https://github.com/Janudis/Extended-Kalman-Filter-GPS_IMU.git
+cd Extended-Kalman-Filter-GPS_IMU
+
+# Build and run (one command)
+./run.sh
+
+# Visualize the results
+python3 visualize.py
+```
+
+# Usage (Manual Steps)
+
+```bash
+# 1. Create build directory and configure
+mkdir -p build && cd build
+cmake ..
+
+# 2. Build
+make
+
+# 3. Copy input data and run
+cp ../localization_log2.csv .
+./hav_cpp_from_python_2
+
+# 4. Output is saved to build/output_utm.csv
+```
+
+The estimated position and orientation will be saved in `build/output_utm.csv`.
+
+# Visualization
+
+**Option A — Python script** (recommended):
+```bash
+python3 visualize.py
+```
+This generates 3 plots (trajectory comparison, yaw comparison, zoomed view) and saves them to `ekf_results.png`.
+
+**Option B — Jupyter Notebook**:
+```bash
+jupyter notebook visualise.ipynb
+```
 
 # Code Structure
 
