@@ -29,13 +29,18 @@ In our case, IMU provide data more frequently than GPS. Here is a step-by-step d
 5) The estimated position and orientation will be saved in the output_utm.csv file.
 
 # Code Structure
-ekf.h: Header file containing the declaration of the ExtendedKalmanFilter class, which implements the EKF algorithm.
 
-geo_ned.h: Header file containing helper functions for converting between geodetic (WGS84) and East-North-Down (ENU) coordinate systems.
-
-utm.h: Header file containing the definition of the utm_coords struct and the utmconv namespace, which provides functions for converting between geodetic and UTM coordinates.
-
-main_utm.cpp: The main C++ file that reads input data from a CSV file in UTM system, performs the GPS and IMU fusion using the EKF, and outputs the estimated position and orientation. (Use main.cpp for ENU coordinate system).
+| File | Description |
+|------|-------------|
+| `main_utm_2.cpp` | Main entry point — reads CSV input, runs EKF, writes output CSV |
+| `ekf.h` / `ekf.cpp` | Extended Kalman Filter class (initialize, predict, update) |
+| `geo_ned.h` / `geo_ned.cpp` | Helper functions for geodetic (WGS84) ↔ ENU coordinate conversion |
+| `utm.h` / `utm.cpp` | UTM coordinate conversion (Transverse Mercator projection) |
+| `run.sh` | Build & run script (one command) |
+| `visualize.py` | Python visualization script for results |
+| `visualise.ipynb` | Jupyter notebook for interactive visualization |
+| `localization_log2.csv` | Sample input data (GPS/IMU sensor log) |
+| `lib/Eigen/` | Eigen linear algebra library (header-only) |
 
 # Input Data Format
 The input data is expected to be in a CSV file (localization_log2.csv) with the following columns:
