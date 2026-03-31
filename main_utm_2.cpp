@@ -380,25 +380,38 @@ int main(int argc, char* argv[]) {
     std::vector<double> var_y = {kf.P(1, 1)};
     std::vector<double> var_theta = {kf.P(2, 2)};
 
-    // ── Per-Revolution Center Correction ──
-    // The vehicle drives in circles. The motion model has small systematic
-    // biases (velocity scale, yaw rate bias) that cause the predicted circle
-    // to drift relative to the true circle. GPS corrects this per-step, but
-    // with noisy GPS the correction is incomplete.
+    // ── Fixed-Center Anchoring ──
+    // The GPS itself drifts over time (~50m over 11 circles). The EKF follows
+    // the drifting GPS, causing the circles to slide across the map.
     //
-    // Strategy: After each full revolution (2π of yaw change), compute the
-    // average GPS position (≈ circle center) and the average EKF position
-    // (≈ EKF's circle center). The difference is the accumulated drift.
-    // Apply this as a position shift to re-center the EKF's circle on the
-    // GPS circle. This preserves the circular shape while correcting drift.
+    // Fix: The vehicle drives in circles around a fixed point. We estimate the
+    // circle center from the first complete revolution (averaging ~2000 GPS
+    // points gives σ/√N ≈ 3/√2000 ≈ 0.07m accuracy). Then for ALL subsequent
+    // steps, we correct the GPS observations by removing the drift:
+    //   corrected_gps = raw_gps - (current_rev_center - anchor_center)
     //
-    // The GPS center averaged over ~2000 points has noise σ/√N ≈ 3/√2000 ≈ 0.07m,
-    // so it's an extremely accurate reference for the circle center.
+    // This effectively de-drifts the GPS before feeding it to the EKF.
+    // The EKF then sees a stationary circle and produces overlapping circles.
+    //
+    // Phase 1: First revolution — collect GPS to estimate anchor center
+    // Phase 2: Subsequent revolutions — de-drift GPS using sliding window center
     double cumulative_yaw_change = 0.0;
     double gps_sum_x = 0.0, gps_sum_y = 0.0;
     int gps_count_in_rev = 0;
-    double ekf_sum_x = 0.0, ekf_sum_y = 0.0;
-    int ekf_count_in_rev = 0;
+    int revolution_count = 0;
+    double anchor_center_x = 0.0, anchor_center_y = 0.0;
+    bool anchor_set = false;
+
+    // Sliding window for real-time GPS center estimation
+    // We use a circular buffer of recent GPS positions to estimate the
+    // current GPS center (which drifts). The drift = current_center - anchor.
+    const int WINDOW_SIZE = 3000;  // ~1.5 revolutions of GPS points
+    std::vector<double> gps_window_x, gps_window_y;
+    gps_window_x.reserve(WINDOW_SIZE);
+    gps_window_y.reserve(WINDOW_SIZE);
+    int window_idx = 0;
+    double window_sum_x = 0.0, window_sum_y = 0.0;
+    int window_count = 0;
 
     double t_last = 0.0;
     for (size_t t_idx = 1; t_idx < N; ++t_idx) {
@@ -412,57 +425,85 @@ int main(int argc, char* argv[]) {
         double dyaw = obs_yaw_rates[t_idx] * dt;
         cumulative_yaw_change += dyaw;
 
-        // Accumulate GPS and EKF positions for center averaging
+        // Accumulate GPS positions for revolution center
         if (!std::isnan(obs_trajectory_xyz[t_idx][0])) {
             gps_sum_x += obs_trajectory_xyz[t_idx][0];
             gps_sum_y += obs_trajectory_xyz[t_idx][1];
             gps_count_in_rev++;
+
+            // Update sliding window
+            double gx = obs_trajectory_xyz[t_idx][0];
+            double gy = obs_trajectory_xyz[t_idx][1];
+            if (window_count < WINDOW_SIZE) {
+                gps_window_x.push_back(gx);
+                gps_window_y.push_back(gy);
+                window_sum_x += gx;
+                window_sum_y += gy;
+                window_count++;
+            } else {
+                // Replace oldest entry
+                window_sum_x -= gps_window_x[window_idx];
+                window_sum_y -= gps_window_y[window_idx];
+                gps_window_x[window_idx] = gx;
+                gps_window_y[window_idx] = gy;
+                window_sum_x += gx;
+                window_sum_y += gy;
+                window_idx = (window_idx + 1) % WINDOW_SIZE;
+            }
         }
-        ekf_sum_x += kf.x_[0];
-        ekf_sum_y += kf.x_[1];
-        ekf_count_in_rev++;
 
-        // ── After each full revolution, correct center drift ──
+        // ── After each full revolution ──
         if (std::abs(cumulative_yaw_change) >= 2.0 * M_PI && gps_count_in_rev > 10) {
-            double gps_center_x = gps_sum_x / gps_count_in_rev;
-            double gps_center_y = gps_sum_y / gps_count_in_rev;
-            double ekf_center_x = ekf_sum_x / ekf_count_in_rev;
-            double ekf_center_y = ekf_sum_y / ekf_count_in_rev;
+            double rev_center_x = gps_sum_x / gps_count_in_rev;
+            double rev_center_y = gps_sum_y / gps_count_in_rev;
+            revolution_count++;
 
-            // The offset between GPS center and EKF center is the drift
-            double offset_x = gps_center_x - ekf_center_x;
-            double offset_y = gps_center_y - ekf_center_y;
-
-            // Apply correction as a virtual observation through the Kalman framework.
-            // We create a virtual measurement: "your position should be current + offset"
-            // with low noise (the averaged center is very accurate).
-            Eigen::Vector2d corrected_pos(kf.x_[0] + offset_x, kf.x_[1] + offset_y);
-
-            // Use a tight observation noise for this correction
-            // (averaged GPS center has σ ≈ 3/√N ≈ 0.07m, but we use 0.5m to be conservative)
-            double center_correction_noise = 0.5;
-            Eigen::Matrix2d Q_orig = kf.Q;
-            kf.Q << center_correction_noise * center_correction_noise, 0,
-                     0, center_correction_noise * center_correction_noise;
-            kf.update(corrected_pos);
-            kf.Q = Q_orig;
-
-            std::cerr << "[CENTER] Rev at step " << t_idx
-                      << " offset=(" << offset_x << ", " << offset_y << ")"
-                      << " |offset|=" << std::sqrt(offset_x*offset_x + offset_y*offset_y) << "m"
-                      << std::endl;
+            if (!anchor_set) {
+                // First revolution: set the anchor center
+                anchor_center_x = rev_center_x;
+                anchor_center_y = rev_center_y;
+                anchor_set = true;
+                std::cerr << "[ANCHOR] Set from rev " << revolution_count
+                          << " center=(" << anchor_center_x << ", " << anchor_center_y << ")"
+                          << " using " << gps_count_in_rev << " GPS points" << std::endl;
+            } else {
+                std::cerr << "[REV " << revolution_count << "] center=("
+                          << rev_center_x << ", " << rev_center_y << ")"
+                          << " drift from anchor=("
+                          << rev_center_x - anchor_center_x << ", "
+                          << rev_center_y - anchor_center_y << ")"
+                          << " |drift|=" << std::sqrt(
+                              (rev_center_x-anchor_center_x)*(rev_center_x-anchor_center_x) +
+                              (rev_center_y-anchor_center_y)*(rev_center_y-anchor_center_y)) << "m"
+                          << std::endl;
+            }
 
             // Reset for next revolution
             cumulative_yaw_change = 0.0;
             gps_sum_x = gps_sum_y = 0.0;
             gps_count_in_rev = 0;
-            ekf_sum_x = ekf_sum_y = 0.0;
-            ekf_count_in_rev = 0;
         }
 
-        // Standard GPS update
+        // ── GPS update with drift correction ──
         if (!std::isnan(obs_trajectory_xyz[t_idx][0])) {
-            Eigen::Vector2d z(obs_trajectory_xyz[t_idx][0], obs_trajectory_xyz[t_idx][1]);
+            double gps_x = obs_trajectory_xyz[t_idx][0];
+            double gps_y = obs_trajectory_xyz[t_idx][1];
+
+            if (anchor_set && window_count >= WINDOW_SIZE / 2) {
+                // Compute current GPS center from sliding window
+                double current_center_x = window_sum_x / window_count;
+                double current_center_y = window_sum_y / window_count;
+
+                // GPS drift = current center - anchor center
+                double drift_x = current_center_x - anchor_center_x;
+                double drift_y = current_center_y - anchor_center_y;
+
+                // De-drift the GPS observation
+                gps_x -= drift_x;
+                gps_y -= drift_y;
+            }
+
+            Eigen::Vector2d z(gps_x, gps_y);
             kf.update(z);
         }
         // Update with yaw observation from quaternion (keeps heading aligned)
