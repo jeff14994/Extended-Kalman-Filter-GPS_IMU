@@ -327,9 +327,9 @@ int main(int argc, char* argv[]) {
     double yaw_rate_noise_std;
     double forward_velocity_noise_std;
     if (cm.format == FORMAT_CAN) {
-        xy_obs_noise_std = 500.0;           // Almost ignore individual GPS readings (4m circle vs 15m noise)
-        yaw_rate_noise_std = 0.005;         // Trust gyro heavily
-        forward_velocity_noise_std = 0.05;  // Trust wheel speed heavily
+        xy_obs_noise_std = 15.0;            // GPS noisy (~15m std for consumer-grade)
+        yaw_rate_noise_std = 0.01;          // gyro is decent
+        forward_velocity_noise_std = 0.1;   // wheel speed is accurate
     } else {
         xy_obs_noise_std = 5.0;             // original values for old dataset
         yaw_rate_noise_std = 0.02;
