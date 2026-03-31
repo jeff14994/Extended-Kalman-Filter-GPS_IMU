@@ -260,24 +260,27 @@ int main(int argc, char* argv[]) {
         double raw_yaw_rate = safe_get(row, cm.col_yaw_rate);
         double yaw_rate = std::isnan(raw_yaw_rate) ? last_non_empty_yaw_rate : raw_yaw_rate * cm.yaw_rate_scale;
 
-        // Yaw angle (degrees → rad)
-        double yaw_deg;
+        // Yaw angle (degrees)
+        // Try direct yaw column first; if NaN, fall through to quaternion
+        double yaw_deg = std::numeric_limits<double>::quiet_NaN();
         if (cm.col_yaw >= 0) {
             double raw_yaw = safe_get(row, cm.col_yaw);
-            yaw_deg = std::isnan(raw_yaw) ? last_non_empty_yaw : raw_yaw;
-        } else if (cm.col_qw >= 0 && cm.col_qx >= 0 && cm.col_qy >= 0 && cm.col_qz >= 0) {
-            // Compute yaw from quaternion
+            if (!std::isnan(raw_yaw)) {
+                yaw_deg = raw_yaw;
+            }
+        }
+        // If direct yaw unavailable, try quaternion
+        if (std::isnan(yaw_deg) && cm.col_qw >= 0 && cm.col_qx >= 0 && cm.col_qy >= 0 && cm.col_qz >= 0) {
             double qw = safe_get(row, cm.col_qw);
             double qx = safe_get(row, cm.col_qx);
             double qy = safe_get(row, cm.col_qy);
             double qz = safe_get(row, cm.col_qz);
             if (!std::isnan(qw) && !std::isnan(qx) && !std::isnan(qy) && !std::isnan(qz)) {
-                // yaw_from_quaternion returns radians; convert to degrees for consistency
                 yaw_deg = yaw_from_quaternion(qw, qx, qy, qz) * 180.0 / M_PI;
-            } else {
-                yaw_deg = last_non_empty_yaw;
             }
-        } else {
+        }
+        // Final fallback
+        if (std::isnan(yaw_deg)) {
             yaw_deg = last_non_empty_yaw;
         }
 
@@ -317,9 +320,21 @@ int main(int argc, char* argv[]) {
     }
     std::cerr << "[INFO] Loaded " << N << " data rows" << std::endl;
 
-    double xy_obs_noise_std = 5.0;
-    double yaw_rate_noise_std = 0.02;
-    double forward_velocity_noise_std = 0.3;
+    // EKF noise parameters — tuned per format
+    // For CAN format: GPS is poor (no RTK, few satellites), so increase
+    // observation noise to trust IMU/motion model more and reduce drift.
+    double xy_obs_noise_std;
+    double yaw_rate_noise_std;
+    double forward_velocity_noise_std;
+    if (cm.format == FORMAT_CAN) {
+        xy_obs_noise_std = 15.0;            // GPS very noisy (~15m std)
+        yaw_rate_noise_std = 0.01;          // gyro is decent
+        forward_velocity_noise_std = 0.1;   // wheel speed is accurate
+    } else {
+        xy_obs_noise_std = 5.0;             // original values for old dataset
+        yaw_rate_noise_std = 0.02;
+        forward_velocity_noise_std = 0.3;
+    }
 
     double initial_yaw_std = M_PI;
     double initial_yaw = gt_yaws[0] + sample_normal_distribution(0, initial_yaw_std);
