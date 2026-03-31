@@ -3,6 +3,8 @@
 #include <vector>
 #include <Eigen/Dense>
 #include <string>
+#include <limits>
+#include <sstream>
 #include "ekf.h"
 #include "geo_ned.h"
 //#include "utm.cpp"
@@ -11,7 +13,44 @@ using namespace std;
 using namespace Eigen;
 #include <iomanip>
 
-int main() {
+namespace {
+double parse_numeric_field(const std::string& value) {
+    if (value.empty()) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    size_t start = value.find_first_not_of(" \t\r\n\"");
+    if (start == std::string::npos) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    size_t end = value.find_last_not_of(" \t\r\n\"");
+    std::string cleaned = value.substr(start, end - start + 1);
+    if (cleaned.empty()) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+
+    try {
+        return std::stod(cleaned);
+    } catch (const std::exception&) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+}
+
+long long parse_timestamp_field(const std::string& value) {
+    double ts = parse_numeric_field(value);
+    if (std::isnan(ts)) {
+        throw std::invalid_argument("Invalid timestamp");
+    }
+    return static_cast<long long>(ts);
+}
+}
+
+int main(int argc, char* argv[]) {
+    std::string input_path = "localization_log2.csv";
+    if (argc > 1) {
+        input_path = argv[1];
+    }
+
     // Create an instance of utmconv
     utmconv::utm_coords coords{};
 
@@ -27,7 +66,12 @@ int main() {
     double last_non_empty_x = 0.0;
     double last_non_empty_y = 0.0;
 
-    std::ifstream raw_data("localization_log2.csv");
+    std::ifstream raw_data(input_path);
+    if (!raw_data.is_open()) {
+        std::cerr << "Failed to open input CSV: " << input_path << std::endl;
+        return 1;
+    }
+
     std::string line, value;
 
 // Read CSV file and store values in vectors
@@ -42,7 +86,7 @@ int main() {
         std::vector<double> row;
 
         std::getline(line_stream, value, ',');
-        long long int timestamp = std::stoll(value);
+        long long int timestamp = parse_timestamp_field(value);
 
         if (first_line) {
             first_timestamp = timestamp;
@@ -53,12 +97,7 @@ int main() {
 
         while (std::getline(line_stream, value, ',')) {
             string_row.push_back(value);
-            if (!value.empty()) {
-                row.push_back(std::stold(value));
-            }
-            else {
-                row.push_back(std::numeric_limits<double>::quiet_NaN()); // Push NaN to the row for empty value
-            }
+            row.push_back(parse_numeric_field(value));
         }
         if (string_row[0].empty()) {  // DEN EXOUME GPS
             utmconv::geodetic_to_utm(last_non_empty_x, last_non_empty_y, coords);

@@ -37,6 +37,9 @@ cd Extended-Kalman-Filter-GPS_IMU
 # Build and run (one command)
 ./run.sh
 
+# Or run with a specific dataset
+./run.sh datasets/can_log_vcu_20260322_150521_decoded.csv
+
 # Visualize the results
 python3 visualize.py
 ```
@@ -52,8 +55,10 @@ cmake ..
 make
 
 # 3. Copy input data and run
-cp ../localization_log2.csv .
-./hav_cpp_from_python_2
+./hav_cpp_from_python_2 ../localization_log2.csv
+
+# Or choose another CSV file
+./hav_cpp_from_python_2 ../datasets/can_log_vcu_20260322_150521_decoded.csv
 
 # 4. Output is saved to build/output_utm.csv
 ```
