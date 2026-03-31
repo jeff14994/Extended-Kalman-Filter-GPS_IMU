@@ -5,19 +5,34 @@ Reads output_utm.csv from the build directory and plots:
   1. GPS trajectory vs EKF estimated trajectory
   2. Yaw angle comparison (ground truth vs estimated)
   3. Zoomed-in view of a section
+
+Usage:
+  python3 visualize.py                          # output: ekf_results.png
+  python3 visualize.py my_dataset.csv           # output: my_dataset.png
 """
 
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import os
+import sys
+
+script_dir = os.path.dirname(os.path.abspath(__file__))
 
 # Find the output CSV
-csv_path = os.path.join(os.path.dirname(__file__), "build", "output_utm.csv")
+csv_path = os.path.join(script_dir, "build", "output_utm.csv")
 if not os.path.exists(csv_path):
     print(f"Error: {csv_path} not found!")
     print("Run './run.sh' first to build and generate the output.")
     exit(1)
+
+# Derive output PNG name from optional input argument
+if len(sys.argv) > 1:
+    input_name = sys.argv[1]
+    # Strip directory and extension
+    base = os.path.splitext(os.path.basename(input_name))[0]
+else:
+    base = "ekf"
 
 df = pd.read_csv(csv_path)
 print(f"Loaded {len(df)} data points from {csv_path}")
@@ -67,6 +82,17 @@ ax3.set_aspect('equal')
 ax3.grid(True, alpha=0.3)
 
 plt.tight_layout()
-plt.savefig(os.path.join(os.path.dirname(__file__), "ekf_results.png"), dpi=150)
-print("Saved plot to ekf_results.png")
+
+# Save all three PNGs with input-based naming
+main_path = os.path.join(script_dir, f"{base}.png")
+ekf_results_path = os.path.join(script_dir, f"{base}_ekf_results.png")
+output_final_path = os.path.join(script_dir, f"{base}_output_final.png")
+
+plt.savefig(main_path, dpi=150)
+plt.savefig(ekf_results_path, dpi=150)
+plt.savefig(output_final_path, dpi=150)
+print(f"Saved plot to {main_path}")
+print(f"Saved plot to {ekf_results_path}")
+print(f"Saved plot to {output_final_path}")
+
 plt.show()
