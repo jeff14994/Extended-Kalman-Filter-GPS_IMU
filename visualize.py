@@ -21,6 +21,7 @@ import numpy as np
 import pandas as pd
 import os
 import sys
+from datetime import datetime
 
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
@@ -31,12 +32,13 @@ if not os.path.exists(csv_path):
     print("Run './run.sh' first to build and generate the output.")
     exit(1)
 
-# Derive base name from optional input argument
+# Derive base name from optional input argument, with timestamp suffix
+timestamp_suffix = datetime.now().strftime("_%Y%m%d_%H%M%S")
 if len(sys.argv) > 1:
     input_name = sys.argv[1]
-    base = os.path.splitext(os.path.basename(input_name))[0]
+    base = os.path.splitext(os.path.basename(input_name))[0] + timestamp_suffix
 else:
-    base = "ekf"
+    base = "ekf" + timestamp_suffix
 
 df_raw = pd.read_csv(csv_path)
 print(f"Loaded {len(df_raw)} data points from {csv_path}")
