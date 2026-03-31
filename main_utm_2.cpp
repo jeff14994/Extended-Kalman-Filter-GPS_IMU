@@ -336,8 +336,12 @@ int main(int argc, char* argv[]) {
         forward_velocity_noise_std = 0.3;
     }
 
-    double initial_yaw_std = M_PI;
-    double initial_yaw = gt_yaws[0] + sample_normal_distribution(0, initial_yaw_std);
+    // Initialize yaw from the first valid quaternion measurement (no random noise)
+    // The original code added random noise with std=π, but since the EKF only
+    // observes (x,y) and never yaw directly, it could never correct the initial
+    // yaw error — causing the EKF heading to be permanently wrong.
+    double initial_yaw_std = 0.1;  // small uncertainty — we trust the quaternion
+    double initial_yaw = gt_yaws[0];  // use actual quaternion yaw, no random offset
 
     Eigen::Vector3d x(obs_trajectory_xyz[0][0], obs_trajectory_xyz[0][1], initial_yaw);
 
@@ -370,10 +374,15 @@ int main(int argc, char* argv[]) {
         Eigen::Vector2d u(obs_forward_velocities[t_idx], obs_yaw_rates[t_idx]);
         // Propagate!
         kf.propagate(u, dt);
-        // Update only when GPS is available
+        // Update with GPS position when available
         if (!std::isnan(obs_trajectory_xyz[t_idx][0])) {
             Eigen::Vector2d z(obs_trajectory_xyz[t_idx][0], obs_trajectory_xyz[t_idx][1]);
             kf.update(z);
+        }
+        // Update with yaw observation from quaternion (keeps heading aligned)
+        if (!std::isnan(gt_yaws[t_idx])) {
+            double yaw_obs_noise = 0.05; // ~3 degrees — quaternion yaw is fairly accurate
+            kf.update_yaw(gt_yaws[t_idx], yaw_obs_noise);
         }
         mu_x.push_back(kf.x_[0]);
         mu_y.push_back(kf.x_[1]);

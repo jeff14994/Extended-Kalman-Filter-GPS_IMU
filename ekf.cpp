@@ -36,6 +36,26 @@ void ExtendedKalmanFilter::update(const Eigen::Vector2d& z) {
     P_ = (I - (K * H)) * P_;
 }
 
+void ExtendedKalmanFilter::update_yaw(double yaw_obs, double yaw_obs_noise_std) {
+    // Scalar yaw observation: z = yaw_obs, H = [0, 0, 1]
+    Eigen::Matrix<double, 1, 3> H;
+    H << 0.0, 0.0, 1.0;
+
+    double S = H * P_ * H.transpose() + yaw_obs_noise_std * yaw_obs_noise_std;
+    Eigen::Vector3d K = P_ * H.transpose() / S;
+
+    // Innovation with angle wrapping
+    double innovation = yaw_obs - x_[2];
+    // Wrap to [-pi, pi]
+    while (innovation > M_PI) innovation -= 2.0 * M_PI;
+    while (innovation < -M_PI) innovation += 2.0 * M_PI;
+
+    x_ = x_ + K * innovation;
+
+    Eigen::Matrix3d I = Eigen::Matrix3d::Identity();
+    P_ = (I - K * H) * P_;
+}
+
 void ExtendedKalmanFilter::propagate(const Eigen::Vector2d& u, double dt) {
     double v = u[0];
     double omega = u[1];

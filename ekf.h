@@ -9,6 +9,7 @@ public:
     ExtendedKalmanFilter() = default;
     void initialize(const Eigen::Vector3d& x, double xy_obs_noise_std, double yaw_rate_noise_std, double forward_velocity_noise_std, double initial_yaw_std);
     void update(const Eigen::Vector2d& z);
+    void update_yaw(double yaw_obs, double yaw_obs_noise_std);
     void propagate(const Eigen::Vector2d& u, double dt);
 
 //    const Eigen::Vector3d& getState() const;
