@@ -327,9 +327,9 @@ int main(int argc, char* argv[]) {
     double yaw_rate_noise_std;
     double forward_velocity_noise_std;
     if (cm.format == FORMAT_CAN) {
-        xy_obs_noise_std = 15.0;            // GPS very noisy (~15m std)
-        yaw_rate_noise_std = 0.01;          // gyro is decent
-        forward_velocity_noise_std = 0.1;   // wheel speed is accurate
+        xy_obs_noise_std = 500.0;           // Almost ignore individual GPS readings (4m circle vs 15m noise)
+        yaw_rate_noise_std = 0.005;         // Trust gyro heavily
+        forward_velocity_noise_std = 0.05;  // Trust wheel speed heavily
     } else {
         xy_obs_noise_std = 5.0;             // original values for old dataset
         yaw_rate_noise_std = 0.02;
@@ -367,6 +367,19 @@ int main(int argc, char* argv[]) {
     std::vector<double> var_y = {kf.P(1, 1)};
     std::vector<double> var_theta = {kf.P(2, 2)};
 
+    // ── Circle Center Correction ──
+    // Track GPS positions over each full revolution (2π of yaw change).
+    // After each revolution, compute the average GPS position (≈ circle center)
+    // and use it to correct the EKF position, reducing drift while preserving
+    // the circular shape from the motion model.
+    double cumulative_yaw_change = 0.0;
+    double gps_sum_x = 0.0, gps_sum_y = 0.0;
+    int gps_count_in_rev = 0;
+    double ekf_sum_x = 0.0, ekf_sum_y = 0.0;
+    int ekf_count_in_rev = 0;
+    // Noise for center correction: lower = trust GPS center average more
+    double center_correction_noise = 5.0;  // meters — averaged GPS center is much less noisy
+
     double t_last = 0.0;
     for (size_t t_idx = 1; t_idx < N; ++t_idx) {
         double t = ts[t_idx];
@@ -374,7 +387,57 @@ int main(int argc, char* argv[]) {
         Eigen::Vector2d u(obs_forward_velocities[t_idx], obs_yaw_rates[t_idx]);
         // Propagate!
         kf.propagate(u, dt);
-        // Update with GPS position when available
+
+        // Track yaw change for revolution detection
+        double dyaw = obs_yaw_rates[t_idx] * dt;
+        cumulative_yaw_change += dyaw;
+
+        // Accumulate GPS positions for center averaging
+        if (!std::isnan(obs_trajectory_xyz[t_idx][0])) {
+            gps_sum_x += obs_trajectory_xyz[t_idx][0];
+            gps_sum_y += obs_trajectory_xyz[t_idx][1];
+            gps_count_in_rev++;
+        }
+        // Accumulate EKF positions
+        ekf_sum_x += kf.x_[0];
+        ekf_sum_y += kf.x_[1];
+        ekf_count_in_rev++;
+
+        // After each full revolution (2π), apply center correction
+        if (std::abs(cumulative_yaw_change) >= 2.0 * M_PI && gps_count_in_rev > 10) {
+            double gps_center_x = gps_sum_x / gps_count_in_rev;
+            double gps_center_y = gps_sum_y / gps_count_in_rev;
+            double ekf_center_x = ekf_sum_x / ekf_count_in_rev;
+            double ekf_center_y = ekf_sum_y / ekf_count_in_rev;
+
+            // Use the GPS average center as an observation of the EKF average center
+            // This corrects drift without distorting the circular shape
+            Eigen::Vector2d z_center(gps_center_x, gps_center_y);
+            // Temporarily set observation to the center and update
+            // But we need to correct the *current* position by the center offset
+            double offset_x = gps_center_x - ekf_center_x;
+            double offset_y = gps_center_y - ekf_center_y;
+
+            // Apply aggressive correction — GPS averaged over a full revolution
+            // is much more accurate than single GPS readings (~15m/sqrt(N) where N~2000)
+            // So we use a high gain (0.8) to strongly pull EKF toward GPS center
+            double gain = 0.8;
+            kf.x_[0] += gain * offset_x;
+            kf.x_[1] += gain * offset_y;
+
+            std::cerr << "[CENTER] Rev at step " << t_idx
+                      << " offset=(" << offset_x << ", " << offset_y << ")"
+                      << " gain=" << gain << std::endl;
+
+            // Reset revolution tracking
+            cumulative_yaw_change = 0.0;
+            gps_sum_x = gps_sum_y = 0.0;
+            gps_count_in_rev = 0;
+            ekf_sum_x = ekf_sum_y = 0.0;
+            ekf_count_in_rev = 0;
+        }
+
+        // Standard GPS update (with original noise — keeps some per-step correction)
         if (!std::isnan(obs_trajectory_xyz[t_idx][0])) {
             Eigen::Vector2d z(obs_trajectory_xyz[t_idx][0], obs_trajectory_xyz[t_idx][1]);
             kf.update(z);
