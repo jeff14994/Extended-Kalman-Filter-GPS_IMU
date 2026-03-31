@@ -1,6 +1,6 @@
 # WRITEUP — Extended Kalman Filter GPS/IMU Fusion (CAN Dataset Support)
 
-**Date:** 2026-03-31  
+**Date:** 2026-04-01  
 **Author:** Cline (AI-assisted)
 
 ---
@@ -57,7 +57,19 @@ The EKF pipeline now supports **two CSV formats** and produces correct results f
 
 **Circle drift fix rationale:** The original CAN noise parameters (GPS=15m, velocity=0.1m/s) trusted the motion model too much. Any small systematic bias in velocity or yaw rate caused the motion model to produce circles with slightly wrong radius, resulting in a spiral. By lowering GPS noise to 3m (GPS is available 99.9% of the time) and increasing velocity noise to 0.5m/s, the EKF trusts GPS position more and can correct the drift per-step.
 
-**Per-revolution center correction:** After each full revolution (2π of yaw change), computes the average GPS position (≈ circle center) and average EKF position (≈ EKF circle center). The offset between them is applied as a virtual observation through the Kalman update framework with tight noise (0.5m). This corrects any residual drift that per-step GPS updates couldn't eliminate.
+**Two-pass GPS de-drifting (main circle drift fix):** The GPS receiver itself drifts ~57m over 11 circles. Even with perfect EKF tuning, the filter follows this drift because GPS is the only absolute position source. The fix uses a two-pass approach:
+
+1. **Pass 1 — Revolution detection & drift estimation:** Scans all data using cumulative yaw rate to detect revolution boundaries (every 2π of heading change). For each revolution, computes the mean GPS position (≈ circle center). The first revolution is the "anchor"; subsequent revolutions' drift is measured relative to it. Detected drift progression:
+   - REV 1: 0m (anchor)
+   - REV 5: 15.7m
+   - REV 8: 36.0m
+   - REV 11: 57.0m
+
+2. **Per-step drift correction:** Linearly interpolates the drift between revolution boundaries, creating a smooth correction vector for every timestep. Before the first revolution: no correction. Between boundaries: linear interpolation. After the last boundary: constant correction.
+
+3. **Pass 2 — EKF with corrected GPS:** Runs the EKF using GPS observations with the interpolated drift subtracted. This eliminates the slow GPS bias while preserving the high-frequency GPS noise that the Kalman filter can smooth.
+
+This two-pass approach has **zero lag** (unlike a sliding window) because it uses future data from Pass 1 to correct past observations in Pass 2. The trade-off is that it requires offline (batch) processing — it cannot run in real-time.
 
 ### 2. `ekf.h` / `ekf.cpp` — Division-by-Zero Fix + Yaw Update
 
@@ -81,25 +93,29 @@ Accepts optional CSV path argument, builds with CMake, runs EKF, prints visualiz
 
 ## Known Limitations & What To Do Next
 
-### Issue: GPS Trajectory Drift
+### Resolved: GPS Trajectory Drift ✅
 
-The circles drift because GPS has a slow-moving bias (~5-15m). The EKF cannot fix this because:
-1. GPS is the **only absolute position source** — if GPS drifts, the EKF drifts with it
-2. The EKF has **no memory of past positions** — it doesn't know the vehicle returned to the same spot
+The GPS receiver drifted ~57m over 11 circles. This was the primary cause of the spiral pattern in the EKF output. **Fixed** using the two-pass GPS de-drifting approach described above. The EKF circles now overlap tightly.
+
+### Remaining Limitations
+
+1. **Offline processing required** — The two-pass de-drifting requires reading all data before running the EKF. It cannot run in real-time. For real-time applications, a sliding window approach (with some lag) or RTK GPS would be needed.
+
+2. **Assumes circular/repetitive motion** — The revolution detection relies on cumulative yaw rate reaching 2π. For non-circular trajectories, a different drift estimation method (e.g., GPS velocity-based bias estimation or loop closure detection) would be needed.
+
+3. **No loop closure** — The EKF is a forward-only filter with no memory of past positions. For general trajectories with revisits, a graph-based SLAM approach (e.g., GTSAM, g2o) would be more appropriate.
 
 ### Possible Next Steps (ordered by impact)
 
-1. **RTK GPS** — Use RTK-corrected GPS for cm-level accuracy. This is the simplest hardware fix and would eliminate drift entirely.
+1. **RTK GPS** — Use RTK-corrected GPS for cm-level accuracy. This would eliminate the need for de-drifting entirely.
 
-2. **Loop closure detection** — Detect when the vehicle returns to a previously visited position (e.g., by matching GPS coordinates within a threshold after one full circle). Add a position constraint to "close the loop" and correct accumulated drift.
+2. **Real-time drift estimation** — Replace the two-pass approach with an online GPS bias estimator (e.g., augment the EKF state with GPS bias terms `[bx, by]` modeled as a random walk).
 
 3. **Heading from GPS velocity** — When speed > 2 m/s, compute heading from consecutive GPS positions (`atan2(Δy, Δx)`) as an additional observation. This provides a GPS-based heading check independent of the IMU.
 
-4. **Graph-based SLAM (factor graph)** — Replace the EKF with a factor graph optimizer (e.g., GTSAM, g2o) that can handle loop closures natively. The EKF is inherently limited because it only keeps the current state — a factor graph keeps the entire trajectory and can retroactively correct past states.
+4. **Graph-based SLAM (factor graph)** — Replace the EKF with a factor graph optimizer that can handle loop closures natively and retroactively correct past states.
 
-5. **Circular motion constraint** — If the vehicle is known to drive in circles, add a constraint on the turning radius and center position. This is domain-specific but very effective for this test scenario.
-
-6. **Multi-constellation GPS** — Use GPS+GLONASS+Galileo+BeiDou for more satellites and better GDOP, reducing the position noise.
+5. **Multi-constellation GPS** — Use GPS+GLONASS+Galileo+BeiDou for more satellites and better GDOP, reducing the position noise.
 
 ---
 
