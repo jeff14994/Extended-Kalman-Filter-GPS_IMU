@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
 """
 Visualize Extended Kalman Filter GPS/IMU fusion results.
-Reads output_utm.csv from the build directory and plots:
-  1. GPS trajectory vs EKF estimated trajectory
-  2. Yaw angle comparison (ground truth vs estimated)
-  3. Zoomed-in view of a section
+Mirrors all plots from visualise.ipynb as a standalone script.
+
+Reads output_utm.csv from the build directory and generates:
+  1. Full trajectory: State vs GPS
+  2. Yaw arrows on full trajectory (sampled every 100 steps)
+  3. Zoomed scatter view (200-step window from middle)
+  4. Zoomed yaw arrows (200-step window from middle)
+  5. Yaw angle time series (ground truth vs estimated)
+  6. Quiver plot: GPS path with yaw & state_yaw arrows (downsampled)
 
 Usage:
-  python3 visualize.py                          # output: ekf_results.png
-  python3 visualize.py my_dataset.csv           # output: my_dataset.png
+  python3 visualize.py                                              # base name: ekf
+  python3 visualize.py datasets/can_log_vcu_20260322_150521_decoded.csv  # base name from input
 """
 
 import matplotlib.pyplot as plt
@@ -26,73 +31,166 @@ if not os.path.exists(csv_path):
     print("Run './run.sh' first to build and generate the output.")
     exit(1)
 
-# Derive output PNG name from optional input argument
+# Derive base name from optional input argument
 if len(sys.argv) > 1:
     input_name = sys.argv[1]
-    # Strip directory and extension
     base = os.path.splitext(os.path.basename(input_name))[0]
 else:
     base = "ekf"
 
-df = pd.read_csv(csv_path)
-print(f"Loaded {len(df)} data points from {csv_path}")
+df_raw = pd.read_csv(csv_path)
+print(f"Loaded {len(df_raw)} data points from {csv_path}")
 
-state_x = df['state_x']
-state_y = df['state_y']
-gps_x = df['easting']
-gps_y = df['northing']
+# Filter out pre-GPS rows: detect by checking if easting/northing jump
+# (pre-GPS rows have bogus UTM from lat=0,lon=0)
+# Use the state_x of the first valid row as reference
+median_easting = df_raw['state_x'].median()
+valid_mask = (df_raw['easting'] - median_easting).abs() < 10000
+if valid_mask.sum() < len(df_raw):
+    print(f"Filtered out {(~valid_mask).sum()} pre-GPS rows")
+df = df_raw[valid_mask].reset_index(drop=True)
+
+# Use relative coordinates (subtract origin for cleaner plots)
+origin_x = df['easting'].iloc[0]
+origin_y = df['northing'].iloc[0]
+
+state_x = df['state_x'] - origin_x
+state_y = df['state_y'] - origin_y
+gps_x = df['easting'] - origin_x
+gps_y = df['northing'] - origin_y
 yaw = df['yaw']
 state_yaw = df['state_yaw']
 
-# --- Plot 1: Full trajectory comparison ---
-fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+print(f"Using {len(df)} valid rows, origin=({origin_x:.1f}, {origin_y:.1f})")
 
-ax1 = axes[0]
-ax1.plot(gps_x, gps_y, label='GPS (observed)', alpha=0.7, linewidth=1)
-ax1.plot(state_x, state_y, label='EKF (estimated)', alpha=0.7, linewidth=1)
+# ============================================================
+# Plot 1: Full trajectory — State vs GPS  (notebook cell 2)
+# ============================================================
+fig1, ax1 = plt.subplots(figsize=(10, 8))
+ax1.plot(state_x, state_y, label='State (EKF)')
+ax1.plot(gps_x, gps_y, label='GPS')
+ax1.legend()
 ax1.set_xlabel('Easting (m)')
 ax1.set_ylabel('Northing (m)')
-ax1.set_title('Full Trajectory: GPS vs EKF')
-ax1.legend()
+ax1.set_title('Full Trajectory: EKF State vs GPS')
 ax1.set_aspect('equal')
 ax1.grid(True, alpha=0.3)
 
-# --- Plot 2: Yaw angle comparison ---
-ax2 = axes[1]
-ax2.plot(yaw.values, lw=1.5, label='Ground Truth Yaw', alpha=0.7)
-ax2.plot(state_yaw.values, lw=1, label='EKF Estimated Yaw', color='r', alpha=0.7)
-ax2.set_xlabel('Time Step')
-ax2.set_ylabel('Yaw Angle (rad)')
-ax2.set_title('Yaw Angle: Ground Truth vs EKF')
-ax2.legend()
+path1 = os.path.join(script_dir, f"{base}.png")
+fig1.savefig(path1, dpi=150, bbox_inches='tight')
+print(f"Saved: {path1}")
+
+# ============================================================
+# Plot 2: Yaw arrows on full trajectory  (notebook cell 3)
+# ============================================================
+fig2, ax2 = plt.subplots(figsize=(10, 8))
+arrow_length = 5
+for idx in range(0, len(gps_x), 100):
+    ax2.arrow(gps_x.iloc[idx], gps_y.iloc[idx],
+              np.cos(yaw.iloc[idx]) * arrow_length,
+              np.sin(yaw.iloc[idx]) * arrow_length,
+              linewidth=1, color="red")
+    ax2.arrow(gps_x.iloc[idx], gps_y.iloc[idx],
+              np.cos(state_yaw.iloc[idx]) * arrow_length,
+              np.sin(state_yaw.iloc[idx]) * arrow_length,
+              linewidth=1, color="blue")
+ax2.set_xlabel('Easting (m)')
+ax2.set_ylabel('Northing (m)')
+ax2.set_title('Yaw Arrows (red=ground truth, blue=EKF) — every 100 steps')
+ax2.set_aspect('equal')
 ax2.grid(True, alpha=0.3)
 
-# --- Plot 3: Zoomed-in trajectory section ---
-ax3 = axes[2]
+path2 = os.path.join(script_dir, f"{base}_ekf_results.png")
+fig2.savefig(path2, dpi=150, bbox_inches='tight')
+print(f"Saved: {path2}")
+
+# ============================================================
+# Plot 3: Zoomed scatter  (notebook cell 4)
+# ============================================================
 n = len(gps_x)
-start = n // 2
-end = min(start + 200, n)
-ax3.scatter(gps_x[start:end], gps_y[start:end], label='GPS', s=10, alpha=0.7)
-ax3.scatter(state_x[start:end], state_y[start:end], label='EKF', s=10, alpha=0.7)
+zoom_start = n // 2
+zoom_end = min(zoom_start + 200, n)
+
+fig3, ax3 = plt.subplots(figsize=(10, 8))
+ax3.scatter(state_x[zoom_start:zoom_end], state_y[zoom_start:zoom_end], label='State (EKF)', s=10)
+ax3.scatter(gps_x[zoom_start:zoom_end], gps_y[zoom_start:zoom_end], label='GPS', s=10)
+ax3.legend()
 ax3.set_xlabel('Easting (m)')
 ax3.set_ylabel('Northing (m)')
-ax3.set_title(f'Zoomed View (steps {start}-{end})')
-ax3.legend()
+ax3.set_title(f'Zoomed Scatter (steps {zoom_start}–{zoom_end})')
 ax3.set_aspect('equal')
 ax3.grid(True, alpha=0.3)
 
-plt.tight_layout()
+path3 = os.path.join(script_dir, f"{base}_output_final.png")
+fig3.savefig(path3, dpi=150, bbox_inches='tight')
+print(f"Saved: {path3}")
 
-# Save all three PNGs with input-based naming
-main_path = os.path.join(script_dir, f"{base}.png")
-ekf_results_path = os.path.join(script_dir, f"{base}_ekf_results.png")
-output_final_path = os.path.join(script_dir, f"{base}_output_final.png")
+# ============================================================
+# Plot 4: Zoomed yaw arrows  (notebook cell 5)
+# ============================================================
+fig4, ax4 = plt.subplots(figsize=(10, 8))
+arrow_length_zoom = 1
+for idx in range(zoom_start, zoom_end):
+    ax4.arrow(gps_x.iloc[idx], gps_y.iloc[idx],
+              np.cos(yaw.iloc[idx]) * arrow_length_zoom,
+              np.sin(yaw.iloc[idx]) * arrow_length_zoom,
+              linewidth=1, color="red")
+    ax4.arrow(gps_x.iloc[idx], gps_y.iloc[idx],
+              np.cos(state_yaw.iloc[idx]) * arrow_length_zoom,
+              np.sin(state_yaw.iloc[idx]) * arrow_length_zoom,
+              linewidth=1, color="blue")
+ax4.set_xlabel('Easting (m)')
+ax4.set_ylabel('Northing (m)')
+ax4.set_title(f'Zoomed Yaw Arrows (steps {zoom_start}–{zoom_end})')
+ax4.set_aspect('equal')
+ax4.grid(True, alpha=0.3)
 
-plt.savefig(main_path, dpi=150)
-plt.savefig(ekf_results_path, dpi=150)
-plt.savefig(output_final_path, dpi=150)
-print(f"Saved plot to {main_path}")
-print(f"Saved plot to {ekf_results_path}")
-print(f"Saved plot to {output_final_path}")
+path4 = os.path.join(script_dir, f"{base}_zoomed_yaw_arrows.png")
+fig4.savefig(path4, dpi=150, bbox_inches='tight')
+print(f"Saved: {path4}")
 
+# ============================================================
+# Plot 5: Yaw angle time series  (notebook cell 7)
+# ============================================================
+fig5, ax5 = plt.subplots(1, 1, figsize=(9, 6))
+ax5.plot(yaw, lw=2, label='ground-truth')
+ax5.plot(state_yaw, lw=1, label='estimated', color='r')
+ax5.set_xlabel('time elapsed')
+ax5.set_ylabel('yaw angle [rad/s]')
+ax5.set_title('Yaw Angle: Ground Truth vs EKF Estimated')
+ax5.legend()
+ax5.grid(True, alpha=0.3)
+
+path5 = os.path.join(script_dir, f"{base}_yaw_timeseries.png")
+fig5.savefig(path5, dpi=150, bbox_inches='tight')
+print(f"Saved: {path5}")
+
+# ============================================================
+# Plot 6: Quiver plot — GPS path with yaw arrows  (notebook cell 8)
+# ============================================================
+downsample_rate = 10
+gps_x_ds = gps_x[::downsample_rate]
+gps_y_ds = gps_y[::downsample_rate]
+yaw_ds = yaw[::downsample_rate]
+state_yaw_ds = state_yaw[::downsample_rate]
+
+fig6, ax6 = plt.subplots(figsize=(10, 10))
+ax6.plot(gps_x_ds, gps_y_ds, label='GPS', color='black')
+ax6.quiver(gps_x_ds, gps_y_ds, np.cos(yaw_ds), np.sin(yaw_ds),
+           color='b', scale=20, label='Yaw (ground truth)')
+ax6.quiver(gps_x_ds, gps_y_ds, np.cos(state_yaw_ds), np.sin(state_yaw_ds),
+           color='r', scale=20, label='State_Yaw (EKF)')
+ax6.legend()
+ax6.set_title('GPS with Yaw and State_Yaw (quiver)')
+ax6.set_xlabel('Easting (m)')
+ax6.set_ylabel('Northing (m)')
+ax6.set_aspect('equal')
+ax6.grid(True, alpha=0.3)
+
+path6 = os.path.join(script_dir, f"{base}_quiver.png")
+fig6.tight_layout()
+fig6.savefig(path6, dpi=150, bbox_inches='tight')
+print(f"Saved: {path6}")
+
+print(f"\nAll plots saved with base name: {base}")
 plt.show()
