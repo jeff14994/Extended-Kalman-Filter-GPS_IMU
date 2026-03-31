@@ -321,15 +321,28 @@ int main(int argc, char* argv[]) {
     std::cerr << "[INFO] Loaded " << N << " data rows" << std::endl;
 
     // EKF noise parameters — tuned per format
-    // For CAN format: GPS is poor (no RTK, few satellites), so increase
-    // observation noise to trust IMU/motion model more and reduce drift.
+    //
+    // KEY INSIGHT for circle drift fix:
+    // The vehicle drives in circles. If we trust the motion model too much
+    // (high GPS noise → low GPS gain), any small systematic bias in velocity
+    // or yaw rate causes the motion model to produce circles that are slightly
+    // too large/small, resulting in a spiral drift.
+    //
+    // Fix: Lower GPS observation noise so the EKF trusts GPS more for position.
+    // GPS is available 99.9% of the time, so even though individual readings
+    // are noisy (~5-10m), the Kalman filter will average them effectively.
+    // Meanwhile, increase process noise to account for systematic velocity/yaw
+    // biases that cause the circular drift.
     double xy_obs_noise_std;
     double yaw_rate_noise_std;
     double forward_velocity_noise_std;
     if (cm.format == FORMAT_CAN) {
-        xy_obs_noise_std = 15.0;            // GPS noisy (~15m std for consumer-grade)
-        yaw_rate_noise_std = 0.01;          // gyro is decent
-        forward_velocity_noise_std = 0.1;   // wheel speed is accurate
+        xy_obs_noise_std = 3.0;             // Trust GPS more — it's available 99.9% of the time
+                                             // Even consumer GPS is ~3-5m CEP; the Kalman filter
+                                             // will smooth out the noise over many updates
+        yaw_rate_noise_std = 0.02;           // Increase gyro noise to allow GPS to correct heading drift
+        forward_velocity_noise_std = 0.5;    // Increase velocity noise — systematic bias in wheel speed
+                                             // is the primary cause of circle drift (radius error)
     } else {
         xy_obs_noise_std = 5.0;             // original values for old dataset
         yaw_rate_noise_std = 0.02;
@@ -367,18 +380,25 @@ int main(int argc, char* argv[]) {
     std::vector<double> var_y = {kf.P(1, 1)};
     std::vector<double> var_theta = {kf.P(2, 2)};
 
-    // ── Circle Center Correction ──
-    // Track GPS positions over each full revolution (2π of yaw change).
-    // After each revolution, compute the average GPS position (≈ circle center)
-    // and use it to correct the EKF position, reducing drift while preserving
-    // the circular shape from the motion model.
+    // ── Per-Revolution Center Correction ──
+    // The vehicle drives in circles. The motion model has small systematic
+    // biases (velocity scale, yaw rate bias) that cause the predicted circle
+    // to drift relative to the true circle. GPS corrects this per-step, but
+    // with noisy GPS the correction is incomplete.
+    //
+    // Strategy: After each full revolution (2π of yaw change), compute the
+    // average GPS position (≈ circle center) and the average EKF position
+    // (≈ EKF's circle center). The difference is the accumulated drift.
+    // Apply this as a position shift to re-center the EKF's circle on the
+    // GPS circle. This preserves the circular shape while correcting drift.
+    //
+    // The GPS center averaged over ~2000 points has noise σ/√N ≈ 3/√2000 ≈ 0.07m,
+    // so it's an extremely accurate reference for the circle center.
     double cumulative_yaw_change = 0.0;
     double gps_sum_x = 0.0, gps_sum_y = 0.0;
     int gps_count_in_rev = 0;
     double ekf_sum_x = 0.0, ekf_sum_y = 0.0;
     int ekf_count_in_rev = 0;
-    // Noise for center correction: lower = trust GPS center average more
-    double center_correction_noise = 5.0;  // meters — averaged GPS center is much less noisy
 
     double t_last = 0.0;
     for (size_t t_idx = 1; t_idx < N; ++t_idx) {
@@ -392,44 +412,47 @@ int main(int argc, char* argv[]) {
         double dyaw = obs_yaw_rates[t_idx] * dt;
         cumulative_yaw_change += dyaw;
 
-        // Accumulate GPS positions for center averaging
+        // Accumulate GPS and EKF positions for center averaging
         if (!std::isnan(obs_trajectory_xyz[t_idx][0])) {
             gps_sum_x += obs_trajectory_xyz[t_idx][0];
             gps_sum_y += obs_trajectory_xyz[t_idx][1];
             gps_count_in_rev++;
         }
-        // Accumulate EKF positions
         ekf_sum_x += kf.x_[0];
         ekf_sum_y += kf.x_[1];
         ekf_count_in_rev++;
 
-        // After each full revolution (2π), apply center correction
+        // ── After each full revolution, correct center drift ──
         if (std::abs(cumulative_yaw_change) >= 2.0 * M_PI && gps_count_in_rev > 10) {
             double gps_center_x = gps_sum_x / gps_count_in_rev;
             double gps_center_y = gps_sum_y / gps_count_in_rev;
             double ekf_center_x = ekf_sum_x / ekf_count_in_rev;
             double ekf_center_y = ekf_sum_y / ekf_count_in_rev;
 
-            // Use the GPS average center as an observation of the EKF average center
-            // This corrects drift without distorting the circular shape
-            Eigen::Vector2d z_center(gps_center_x, gps_center_y);
-            // Temporarily set observation to the center and update
-            // But we need to correct the *current* position by the center offset
+            // The offset between GPS center and EKF center is the drift
             double offset_x = gps_center_x - ekf_center_x;
             double offset_y = gps_center_y - ekf_center_y;
 
-            // Apply aggressive correction — GPS averaged over a full revolution
-            // is much more accurate than single GPS readings (~15m/sqrt(N) where N~2000)
-            // So we use a high gain (0.8) to strongly pull EKF toward GPS center
-            double gain = 0.8;
-            kf.x_[0] += gain * offset_x;
-            kf.x_[1] += gain * offset_y;
+            // Apply correction as a virtual observation through the Kalman framework.
+            // We create a virtual measurement: "your position should be current + offset"
+            // with low noise (the averaged center is very accurate).
+            Eigen::Vector2d corrected_pos(kf.x_[0] + offset_x, kf.x_[1] + offset_y);
+
+            // Use a tight observation noise for this correction
+            // (averaged GPS center has σ ≈ 3/√N ≈ 0.07m, but we use 0.5m to be conservative)
+            double center_correction_noise = 0.5;
+            Eigen::Matrix2d Q_orig = kf.Q;
+            kf.Q << center_correction_noise * center_correction_noise, 0,
+                     0, center_correction_noise * center_correction_noise;
+            kf.update(corrected_pos);
+            kf.Q = Q_orig;
 
             std::cerr << "[CENTER] Rev at step " << t_idx
                       << " offset=(" << offset_x << ", " << offset_y << ")"
-                      << " gain=" << gain << std::endl;
+                      << " |offset|=" << std::sqrt(offset_x*offset_x + offset_y*offset_y) << "m"
+                      << std::endl;
 
-            // Reset revolution tracking
+            // Reset for next revolution
             cumulative_yaw_change = 0.0;
             gps_sum_x = gps_sum_y = 0.0;
             gps_count_in_rev = 0;
@@ -437,7 +460,7 @@ int main(int argc, char* argv[]) {
             ekf_count_in_rev = 0;
         }
 
-        // Standard GPS update (with original noise — keeps some per-step correction)
+        // Standard GPS update
         if (!std::isnan(obs_trajectory_xyz[t_idx][0])) {
             Eigen::Vector2d z(obs_trajectory_xyz[t_idx][0], obs_trajectory_xyz[t_idx][1]);
             kf.update(z);

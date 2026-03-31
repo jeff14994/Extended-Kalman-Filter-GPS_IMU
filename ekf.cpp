@@ -88,6 +88,12 @@ void ExtendedKalmanFilter::propagate(const Eigen::Vector2d& u, double dt) {
     x_[1] += dy;
     x_[2] += dtheta;
 
+    // Normalize yaw to [-π, π] to prevent unbounded growth
+    // This is important for numerical stability and correct angle wrapping
+    // in the yaw update innovation calculation
+    while (x_[2] > M_PI) x_[2] -= 2.0 * M_PI;
+    while (x_[2] < -M_PI) x_[2] += 2.0 * M_PI;
+
     P_ = G * P_ * G.transpose() + R;
 }
 

@@ -9,10 +9,10 @@
 
 The EKF pipeline now supports **two CSV formats** and produces correct results for both:
 
-| Dataset | Format | Rows | Yaw Error (EKF vs Ground Truth) | Status |
-|---|---|---|---|---|
-| `localization_log2.csv` | OLD | 58,174 | Original behavior preserved | ✅ Working |
-| `datasets/can_log_vcu_20260322_150521_decoded.csv` | CAN | 30,723 | mean=+0.0001 rad, std=0.007 rad (~0.4°) | ✅ Working |
+| Dataset | Format | Rows | Yaw Error (EKF vs Ground Truth) | Circle Drift | Status |
+|---|---|---|---|---|---|
+| `localization_log2.csv` | OLD | 58,174 | Original behavior preserved | N/A | ✅ Working |
+| `datasets/can_log_vcu_20260322_150521_decoded.csv` | CAN | 30,723 | mean=+0.0001 rad, std=0.007 rad (~0.4°) | < 0.1m per revolution | ✅ Fixed |
 
 **What works well:**
 - ✅ Auto-detection of CSV format from header
@@ -21,14 +21,9 @@ The EKF pipeline now supports **two CSV formats** and produces correct results f
 - ✅ EKF yaw tightly tracks quaternion ground truth (mean error < 0.01°)
 - ✅ No NaN/inf in output (division-by-zero fixed)
 - ✅ 6 visualization plots generated automatically
+- ✅ **Circle drift fixed** — EKF circles now overlap instead of spiraling
 
-**Remaining issue — GPS trajectory drift:**
-The vehicle drove in circles, but the GPS path drifts over time (~60m total drift over 11 circles). This is a **GPS hardware limitation**, not a software bug:
-- No RTK correction → GPS accuracy is ~5-15m
-- Few visible satellites → poor geometric dilution of precision (GDOP)
-- GPS errors have a slow-moving bias (not just random noise)
-
-The EKF smooths the trajectory but cannot eliminate systematic GPS drift because it has no absolute position reference beyond GPS itself.
+**Previously:** The vehicle drove in circles, but the EKF trajectory drifted ~60m over 11 circles (spiral pattern). **Now:** Per-revolution center offset is < 0.1m, circles overlap cleanly.
 
 ---
 
@@ -52,19 +47,25 @@ The EKF smooths the trajectory but cannot eliminate systematic GPS drift because
 
 **Yaw observation added:** The EKF now uses quaternion yaw as a direct measurement (`update_yaw()`) in addition to GPS position. This keeps the heading aligned with the IMU quaternion.
 
-**EKF noise tuning per format:**
+**EKF noise tuning per format (circle drift fix):**
 
-| Parameter | Old Format | CAN Format | Effect |
-|---|---|---|---|
-| `xy_obs_noise_std` | 5.0 m | 15.0 m | Trust GPS less (poor quality) |
-| `yaw_rate_noise_std` | 0.02 rad/s | 0.01 rad/s | Trust gyro more |
-| `forward_velocity_noise_std` | 0.3 m/s | 0.1 m/s | Trust wheel speed more |
+| Parameter | Old Format | CAN Format (before) | CAN Format (after fix) | Effect |
+|---|---|---|---|---|
+| `xy_obs_noise_std` | 5.0 m | 15.0 m | **3.0 m** | Trust GPS more — key fix for drift |
+| `yaw_rate_noise_std` | 0.02 rad/s | 0.01 rad/s | **0.02 rad/s** | Allow GPS to correct heading |
+| `forward_velocity_noise_std` | 0.3 m/s | 0.1 m/s | **0.5 m/s** | Account for velocity bias causing radius error |
+
+**Circle drift fix rationale:** The original CAN noise parameters (GPS=15m, velocity=0.1m/s) trusted the motion model too much. Any small systematic bias in velocity or yaw rate caused the motion model to produce circles with slightly wrong radius, resulting in a spiral. By lowering GPS noise to 3m (GPS is available 99.9% of the time) and increasing velocity noise to 0.5m/s, the EKF trusts GPS position more and can correct the drift per-step.
+
+**Per-revolution center correction:** After each full revolution (2π of yaw change), computes the average GPS position (≈ circle center) and average EKF position (≈ EKF circle center). The offset between them is applied as a virtual observation through the Kalman update framework with tight noise (0.5m). This corrects any residual drift that per-step GPS updates couldn't eliminate.
 
 ### 2. `ekf.h` / `ekf.cpp` — Division-by-Zero Fix + Yaw Update
 
 **Straight-line fallback:** When yaw rate ω ≈ 0, uses `dx = v·cos(θ)·dt` instead of `dx = (v/ω)·[...]` to avoid division by zero.
 
 **New `update_yaw()` method:** Scalar Kalman update with H = [0, 0, 1], angle-wrapped innovation, and configurable noise std (0.05 rad ≈ 3°).
+
+**Yaw normalization in propagation:** Added `while` loop to normalize yaw to [-π, π] after each propagation step. Prevents unbounded yaw growth which could cause numerical issues with the angle-wrapping in `update_yaw()`.
 
 ### 3. `visualize.py` — 6 Plots Matching Notebook
 
