@@ -61,12 +61,39 @@ struct ColumnMap {
 **GPS presence detection:**  
 Changed from checking if `string_row[0]` is empty (which was the latitude column only in the old format) to checking if the actual latitude column (identified by `ColumnMap`) is non-empty and non-NaN.
 
-**Yaw from quaternion:**  
-When `0x388_Y` is empty (as in the CAN dataset), yaw is computed from the quaternion columns (`0x488_q_w/x/y/z`) using the standard ZYX Euler angle extraction:
+**Yaw from quaternion (with per-row fallthrough):**  
+The `0x388_Y` column exists in the CAN CSV header but all values are empty. The original code checked `if (cm.col_yaw >= 0)` which was true (column exists), so it never reached the quaternion branch — resulting in yaw = 0 for every row.
 
+**Fix:** Changed to a per-row fallthrough: try the direct yaw column first, and if the value is NaN (empty), fall through to the quaternion computation:
+
+```cpp
+// Try direct yaw column first; if NaN, fall through to quaternion
+double yaw_deg = NaN;
+if (cm.col_yaw >= 0) {
+    double raw_yaw = safe_get(row, cm.col_yaw);
+    if (!std::isnan(raw_yaw)) yaw_deg = raw_yaw;
+}
+// If direct yaw unavailable, try quaternion
+if (std::isnan(yaw_deg) && cm.col_qw >= 0 && ...) {
+    yaw_deg = yaw_from_quaternion(qw, qx, qy, qz) * 180.0 / M_PI;
+}
+```
+
+The quaternion-to-yaw formula (ZYX Euler):
 ```cpp
 double yaw = atan2(2*(qw*qz + qx*qy), 1 - 2*(qy*qy + qz*qz));
 ```
+
+**EKF noise tuning per format:**  
+For the CAN dataset (poor GPS, no RTK, few satellites), the EKF parameters are tuned to trust the IMU/motion model more and GPS less:
+
+| Parameter | Old Format | CAN Format | Effect |
+|---|---|---|---|
+| `xy_obs_noise_std` | 5.0 m | 15.0 m | GPS observation noise ↑ → trust GPS less |
+| `yaw_rate_noise_std` | 0.02 rad/s | 0.01 rad/s | Process noise ↓ → trust gyro more |
+| `forward_velocity_noise_std` | 0.3 m/s | 0.1 m/s | Process noise ↓ → trust wheel speed more |
+
+This makes the EKF produce smoother circles that rely more on the motion model, rather than blindly following noisy GPS jumps.
 
 **First GPS fix handling:**  
 Added logic to find the first row with valid GPS data for EKF initialization, since the CAN dataset has ~36 rows of IMU-only data before the first GPS fix.
@@ -191,6 +218,25 @@ python3 visualize.py datasets/can_log_vcu_20260322_150521_decoded.csv
 # Visualize with default naming
 python3 visualize.py
 ```
+
+## Known Limitations & Future Improvements
+
+**GPS drift causing circle drift:**  
+The vehicle drove in circles (should be perfect circles), but the GPS path drifts over time because:
+- No RTK correction → GPS accuracy is ~5-15m
+- Few visible satellites → poor GDOP
+- GPS errors have a **slow-moving bias** (not just random noise), so the EKF cannot fully correct it
+
+The EKF tuning (trusting IMU more) helps produce smoother circles, but the **center of each circle still drifts** because the EKF has no way to know the vehicle is repeating the same path.
+
+**Possible future improvements:**
+1. **Loop closure detection** — Detect when the vehicle returns to a previously visited position and add a constraint to close the loop
+2. **Circular motion constraint** — If the vehicle is known to drive in circles, constrain the radius and center
+3. **RTK GPS** — Use RTK-corrected GPS for cm-level accuracy
+4. **Graph-based SLAM** — Replace the EKF with a factor graph that can handle loop closures natively
+5. **Heading from GPS velocity** — When speed > threshold, compute heading from consecutive GPS positions as an additional observation
+
+---
 
 ## Generated Output Files
 
