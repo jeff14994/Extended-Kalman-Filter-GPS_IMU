@@ -1,7 +1,6 @@
 # WRITEUP — Extended Kalman Filter GPS/IMU Fusion (CAN Dataset Support)
 
 **Date:** 2026-04-01  
-**Author:** Cline (AI-assisted)
 
 ---
 
