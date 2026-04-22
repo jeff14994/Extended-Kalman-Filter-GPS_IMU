@@ -12,8 +12,9 @@ Reads output_utm.csv from the build directory and generates:
   6. Quiver plot: GPS path with yaw & state_yaw arrows (downsampled)
 
 Usage:
-  python3 visualize.py                                              # base name: ekf
-  python3 visualize.py datasets/can_log_vcu_20260322_150521_decoded.csv  # base name from input
+  python3 visualize.py
+  python3 visualize.py datasets/can_log_vcu_20260322_150521_decoded.csv
+  python3 visualize.py datasets/can_log_vcu_20260322_150521_decoded.csv outputs/run_01
 """
 
 import matplotlib.pyplot as plt
@@ -39,6 +40,15 @@ if len(sys.argv) > 1:
     base = os.path.splitext(os.path.basename(input_name))[0] + timestamp_suffix
 else:
     base = "ekf" + timestamp_suffix
+
+if len(sys.argv) > 2:
+    output_dir = sys.argv[2]
+    if not os.path.isabs(output_dir):
+        output_dir = os.path.join(script_dir, output_dir)
+else:
+    output_dir = script_dir
+
+os.makedirs(output_dir, exist_ok=True)
 
 df_raw = pd.read_csv(csv_path)
 print(f"Loaded {len(df_raw)} data points from {csv_path}")
@@ -78,7 +88,7 @@ ax1.set_title('Full Trajectory: EKF State vs GPS')
 ax1.set_aspect('equal')
 ax1.grid(True, alpha=0.3)
 
-path1 = os.path.join(script_dir, f"{base}.png")
+path1 = os.path.join(output_dir, f"{base}.png")
 fig1.savefig(path1, dpi=150, bbox_inches='tight')
 print(f"Saved: {path1}")
 
@@ -102,7 +112,7 @@ ax2.set_title('Yaw Arrows (red=ground truth, blue=EKF) — every 100 steps')
 ax2.set_aspect('equal')
 ax2.grid(True, alpha=0.3)
 
-path2 = os.path.join(script_dir, f"{base}_ekf_results.png")
+path2 = os.path.join(output_dir, f"{base}_ekf_results.png")
 fig2.savefig(path2, dpi=150, bbox_inches='tight')
 print(f"Saved: {path2}")
 
@@ -123,7 +133,7 @@ ax3.set_title(f'Zoomed Scatter (steps {zoom_start}–{zoom_end})')
 ax3.set_aspect('equal')
 ax3.grid(True, alpha=0.3)
 
-path3 = os.path.join(script_dir, f"{base}_output_final.png")
+path3 = os.path.join(output_dir, f"{base}_output_final.png")
 fig3.savefig(path3, dpi=150, bbox_inches='tight')
 print(f"Saved: {path3}")
 
@@ -147,7 +157,7 @@ ax4.set_title(f'Zoomed Yaw Arrows (steps {zoom_start}–{zoom_end})')
 ax4.set_aspect('equal')
 ax4.grid(True, alpha=0.3)
 
-path4 = os.path.join(script_dir, f"{base}_zoomed_yaw_arrows.png")
+path4 = os.path.join(output_dir, f"{base}_zoomed_yaw_arrows.png")
 fig4.savefig(path4, dpi=150, bbox_inches='tight')
 print(f"Saved: {path4}")
 
@@ -163,7 +173,7 @@ ax5.set_title('Yaw Angle: Ground Truth vs EKF Estimated')
 ax5.legend()
 ax5.grid(True, alpha=0.3)
 
-path5 = os.path.join(script_dir, f"{base}_yaw_timeseries.png")
+path5 = os.path.join(output_dir, f"{base}_yaw_timeseries.png")
 fig5.savefig(path5, dpi=150, bbox_inches='tight')
 print(f"Saved: {path5}")
 
@@ -189,10 +199,11 @@ ax6.set_ylabel('Northing (m)')
 ax6.set_aspect('equal')
 ax6.grid(True, alpha=0.3)
 
-path6 = os.path.join(script_dir, f"{base}_quiver.png")
+path6 = os.path.join(output_dir, f"{base}_quiver.png")
 fig6.tight_layout()
 fig6.savefig(path6, dpi=150, bbox_inches='tight')
 print(f"Saved: {path6}")
 
-print(f"\nAll plots saved with base name: {base}")
-plt.show()
+print(f"\nAll plots saved in: {output_dir}")
+print(f"Base file prefix: {base}")
+plt.close('all')
